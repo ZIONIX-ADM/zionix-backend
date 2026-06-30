@@ -635,6 +635,11 @@ async def buscar_ativo(ticker: str):
         }
 
 
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
 @app.get("/ranking")
 async def ranking(limite: int = 10):
     try:
