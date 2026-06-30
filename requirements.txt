@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+yfinance
+openai
+python-dotenv
+
+# banco de dados (Supabase/Postgres)
+sqlalchemy[asyncio]
+asyncpg
