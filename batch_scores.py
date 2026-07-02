@@ -7,6 +7,8 @@ import asyncio
 import json
 import os
 import time
+import ssl
+import urllib.request
 from datetime import date
 
 import asyncpg
@@ -14,7 +16,7 @@ import yfinance as yf
 from dotenv import load_dotenv
 
 from main import (
-    analisar_ativo,
+    # analisar_ativo mantida em main.py para comparação futura — não usada no batch
     calcular_drawdown_maximo,
     traduzir_setor,
     verificar_confiabilidade,
@@ -24,18 +26,58 @@ from main import (
 load_dotenv()
 
 DB_URL = os.getenv("DATABASE_URL", "").replace("postgresql+asyncpg://", "postgresql://")
+NEXTJS_URL = os.getenv("NEXTJS_URL", "http://localhost:3000")
 TICKERS_FILE = "tickers_b3.json"
 BATCH_SIZE = 10
 SLEEP_ENTRE_BATCHES = 2  # segundos
 
 
-def calcular_score_ativo(ticker_sa: str):
-    """Calcula score sem IA. Retorna dict com todos os campos para o banco."""
+def sinal_from_score(score: float) -> str:
+    if score >= 70:
+        return "Compra forte"
+    if score >= 55:
+        return "Compra"
+    if score >= 45:
+        return "Aguardar confirmação"
+    if score >= 30:
+        return "Cautela"
+    return "Evitar"
+
+
+def chamar_motor_ts(precos, highs, lows, datas, mercado, setor) -> dict:
+    """POST para /api/score (motor TS gerarDiagnosticoDiario). Retorna {score, decisao}."""
+    payload = json.dumps({
+        "precos": precos,
+        "highs": highs,
+        "lows": lows,
+        "datas": datas,
+        "mercado": mercado,
+        "setor": setor,
+    }).encode()
+    req = urllib.request.Request(
+        f"{NEXTJS_URL}/api/score",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    # ssl_ctx: no Railway (Linux) os certs sistema funcionam normalmente.
+    # Em macOS dev, python.org installer não configura certs — create_default_context
+    # com cafile do certifi resolve sem desabilitar verificação.
+    try:
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        ctx = ssl.create_default_context()
+    with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+        return json.loads(resp.read())
+
+
+def calcular_score_ativo(ticker_sa: str, mercado: str = "neutro"):
+    """Calcula score via motor TS. Retorna dict com todos os campos para o banco."""
     try:
         empresa = yf.Ticker(ticker_sa)
         info = empresa.info
 
-        nome = info.get("longName") or ticker_sa
+        nome = info.get("longName") or info.get("shortName") or ticker_sa.replace(".SA", "")
         setor = traduzir_setor(info.get("sector") or "")
         preco_raw = info.get("currentPrice")
 
@@ -70,10 +112,6 @@ def calcular_score_ativo(ticker_sa: str):
         else:
             volatilidade = "baixa"
 
-        maximo = historico["High"].max()
-        minimo = historico["Low"].min()
-        posicao_range = (preco_atual - minimo) / (maximo - minimo) if (maximo - minimo) != 0 else 0
-
         sequencia = 0
         for i in range(len(historico) - 1, 0, -1):
             if historico["Close"].iloc[i] > historico["Close"].iloc[i - 1]:
@@ -81,12 +119,27 @@ def calcular_score_ativo(ticker_sa: str):
             else:
                 break
 
-        analise = analisar_ativo(
-            tendencia=tendencia,
-            variacao_percentual=variacao_percentual,
-            posicao_range=posicao_range,
-            sequencia=sequencia,
-            volatilidade=volatilidade,
+        # contexto derivado localmente (mesma lógica do legado)
+        if tendencia == "alta" and sequencia >= 3:
+            contexto = "tendencia_forte"
+        elif tendencia == "alta":
+            contexto = "pullback"
+        elif tendencia == "queda":
+            contexto = "bearish"
+        else:
+            contexto = "neutro"
+
+        precos_list = [round(float(x), 2) for x in historico["Close"].tolist()]
+        highs_list  = [round(float(x), 2) for x in historico["High"].tolist()]
+        lows_list   = [round(float(x), 2) for x in historico["Low"].tolist()]
+        datas_list  = [d.strftime("%d/%m") for d in historico.index]
+
+        analise = chamar_motor_ts(
+            precos=precos_list,
+            highs=highs_list,
+            lows=lows_list,
+            datas=datas_list,
+            mercado=mercado,
             setor=setor,
         )
 
@@ -95,8 +148,8 @@ def calcular_score_ativo(ticker_sa: str):
             "nome": nome,
             "score": analise["score"],
             "decisao": analise["decisao"],
-            "sinal": analise["sinal"],
-            "contexto": analise["contexto"],
+            "sinal": sinal_from_score(analise["score"]),
+            "contexto": contexto,
             "preco": float(preco_atual),
             "confiabilidade": "reduzida" if avisos else "alta",
             "avisos": avisos,
@@ -175,6 +228,7 @@ async def main():
 
     print(f"=== Batch Zionix — {date.today()} ===")
     print(f"Total de tickers: {total}")
+    print(f"Motor TS em: {NEXTJS_URL}/api/score")
 
     print("Calculando regime de mercado (IBOV)...")
     mercado = calcular_regime_mercado()
@@ -189,7 +243,7 @@ async def main():
 
         for ticker in lote:
             ticker_sa = f"{ticker}.SA"
-            resultado = calcular_score_ativo(ticker_sa)
+            resultado = calcular_score_ativo(ticker_sa, mercado=mercado)
 
             if "erro" in resultado:
                 contadores["erro"] += 1
