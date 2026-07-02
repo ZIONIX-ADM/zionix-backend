@@ -594,16 +594,46 @@ async def buscar_ativo(ticker: str):
             pressao
         )
 
+        # Busca score suavizado do último batch no banco — fonte única de verdade
+        score_db = None
+        decisao_db = None
+        sinal_db = None
+        calculado_em = None
+        try:
+            conn = await asyncpg.connect(_DB_URL, ssl="require")
+            row = await conn.fetchrow("""
+                SELECT score, decisao, sinal, calculado_em
+                FROM scores_historico
+                WHERE ticker = $1 AND nao_elegivel = false
+                ORDER BY data_referencia DESC, calculado_em DESC
+                LIMIT 1
+            """, ticker)
+            await conn.close()
+            if row:
+                score_db = float(row["score"])
+                decisao_db = row["decisao"]
+                sinal_db = row["sinal"]
+                calculado_em = row["calculado_em"].isoformat() if row["calculado_em"] else None
+        except Exception:
+            pass
+
+        ticker_limpo = ticker.replace(".SA", "")
+
         return {
-            "ticker": ticker,
+            "ticker": ticker_limpo,
             "nome": nome,
             "setor": setor,
             "preco": preco_formatado,
             "moeda": moeda,
 
-            "score": score,
+            # Score consistente: usa DB (suavizado) se disponível, fallback ao legado
+            "score": score_db if score_db is not None else score,
+            "decisao": decisao_db if decisao_db is not None else decisao,
+            "sinal": sinal_db if sinal_db is not None else sinal,
+            "score_bruto_legado": score,  # mantido apenas para debug interno
+            "calculado_em": calculado_em,
+
             "cenario": cenario,
-            "sinal": sinal,
             "forca": forca,
             "pressao": pressao,
             "posicao": posicao,
@@ -654,21 +684,31 @@ async def ranking(limite: int = 10):
             ORDER BY s.score DESC
             LIMIT $1
         """, limite)
+        meta = await conn.fetchrow("""
+            SELECT MAX(calculado_em) AS ultimo_batch
+            FROM scores_historico
+            WHERE nao_elegivel = false
+        """)
         await conn.close()
 
-        return [
-            {
-                "ticker": r["ticker"],
-                "nome": r["nome"],
-                "score": float(r["score"]),
-                "decisao": r["decisao"],
-                "sinal": r["sinal"],
-                "mercado": r["mercado"],
-                "preco": float(r["preco"]) if r["preco"] else None,
-                "data_referencia": str(r["data_referencia"]),
-            }
-            for r in rows
-        ]
+        ultimo_batch = meta["ultimo_batch"].isoformat() if meta and meta["ultimo_batch"] else None
+
+        return {
+            "ultimo_batch": ultimo_batch,
+            "ativos": [
+                {
+                    "ticker": r["ticker"].replace(".SA", ""),
+                    "nome": r["nome"],
+                    "score": float(r["score"]),
+                    "decisao": r["decisao"],
+                    "sinal": r["sinal"],
+                    "mercado": r["mercado"],
+                    "preco": float(r["preco"]) if r["preco"] else None,
+                    "data_referencia": str(r["data_referencia"]),
+                }
+                for r in rows
+            ]
+        }
     except Exception as e:
         return {"erro": str(e)}
 
