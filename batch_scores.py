@@ -143,6 +143,14 @@ def calcular_score_ativo(ticker_sa: str, mercado: str = "neutro"):
             setor=setor,
         )
 
+        # Motor TS sinaliza dados inválidos/insuficientes (NaN, séries curtas, etc.)
+        if analise.get("insuficiente"):
+            return {
+                "nao_elegivel": True,
+                "motivo_bloqueio": "dados insuficientes ou inválidos para o motor de score",
+                "nome": nome,
+            }
+
         return {
             "nao_elegivel": False,
             "nome": nome,
