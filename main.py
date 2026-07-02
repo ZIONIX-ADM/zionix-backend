@@ -673,6 +673,90 @@ async def ranking(limite: int = 10):
         return {"erro": str(e)}
 
 
+@app.get("/analises")
+async def analises():
+    try:
+        conn = await asyncpg.connect(_DB_URL, ssl="require")
+        rows = await conn.fetch("""
+            SELECT s.ticker, a.setor, s.score, s.decisao, s.sinal,
+                   s.mercado, s.contexto, s.confiabilidade
+            FROM scores_atual s
+            LEFT JOIN ativos a ON a.ticker = s.ticker
+            WHERE s.nao_elegivel = false
+        """)
+        await conn.close()
+
+        if not rows:
+            return {"erro": "sem dados"}
+
+        # regime de mercado dominante
+        from collections import Counter
+        mercado_counter = Counter(r["mercado"] for r in rows)
+        mercado = mercado_counter.most_common(1)[0][0]
+
+        # contagem por decisao
+        por_decisao = dict(Counter(r["decisao"] for r in rows))
+
+        # distribuição por faixas de score
+        faixas = {"0-20": 0, "20-40": 0, "40-60": 0, "60-80": 0, "80-100": 0}
+        for r in rows:
+            s = float(r["score"])
+            if s < 20:      faixas["0-20"] += 1
+            elif s < 40:    faixas["20-40"] += 1
+            elif s < 60:    faixas["40-60"] += 1
+            elif s < 80:    faixas["60-80"] += 1
+            else:           faixas["80-100"] += 1
+        distribuicao = [{"faixa": k, "count": v} for k, v in faixas.items()]
+
+        # agrupamento por setor
+        setores: dict = {}
+        for r in rows:
+            setor = r["setor"] or "Outros"
+            s = float(r["score"])
+            if setor not in setores:
+                setores[setor] = {"count": 0, "score_total": 0.0, "top_ticker": r["ticker"], "top_score": s}
+            setores[setor]["count"] += 1
+            setores[setor]["score_total"] += s
+            if s > setores[setor]["top_score"]:
+                setores[setor]["top_score"] = s
+                setores[setor]["top_ticker"] = r["ticker"]
+        por_setor = sorted(
+            [{"setor": k, "count": v["count"],
+              "score_medio": round(v["score_total"] / v["count"], 1),
+              "top_ticker": v["top_ticker"]}
+             for k, v in setores.items()],
+            key=lambda x: x["score_medio"], reverse=True
+        )
+
+        # destaques: top momentum (tendencia_forte + pullback)
+        momentum_rows = sorted(
+            [r for r in rows if r["contexto"] in ("tendencia_forte", "pullback")],
+            key=lambda r: float(r["score"]), reverse=True
+        )[:3]
+        top_momentum = [{"ticker": r["ticker"], "score": float(r["score"]),
+                         "contexto": r["contexto"], "sinal": r["sinal"]} for r in momentum_rows]
+
+        # destaques: top estrutural (confiabilidade alta, excluindo os do momentum)
+        momentum_tickers = {r["ticker"] for r in momentum_rows}
+        estrutural_rows = sorted(
+            [r for r in rows if r["confiabilidade"] == "alta" and r["ticker"] not in momentum_tickers],
+            key=lambda r: float(r["score"]), reverse=True
+        )[:3]
+        top_estrutural = [{"ticker": r["ticker"], "score": float(r["score"]),
+                           "contexto": r["contexto"], "sinal": r["sinal"]} for r in estrutural_rows]
+
+        return {
+            "mercado": mercado,
+            "total_ativos": len(rows),
+            "por_decisao": por_decisao,
+            "distribuicao": distribuicao,
+            "por_setor": por_setor,
+            "destaques": {"top_momentum": top_momentum, "top_estrutural": top_estrutural},
+        }
+    except Exception as e:
+        return {"erro": str(e)}
+
+
 @app.get("/historico/{ticker}")
 def historico(
     ticker: str,
