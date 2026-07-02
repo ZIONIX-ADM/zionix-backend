@@ -163,9 +163,9 @@ async def persistir(conn, ticker: str, resultado: dict, mercado: str = "neutro")
     """INSERT na tabela scores_historico, idempotente por (ticker, data_referencia)."""
     await conn.execute("""
         INSERT INTO ativos (ticker, nome, setor)
-        VALUES ($1::varchar, $2, NULL)
-        ON CONFLICT (ticker) DO UPDATE SET nome = EXCLUDED.nome
-    """, ticker, resultado.get("nome", ticker))
+        VALUES ($1::varchar, $2, $3)
+        ON CONFLICT (ticker) DO UPDATE SET nome = EXCLUDED.nome, setor = EXCLUDED.setor
+    """, ticker, resultado.get("nome", ticker), resultado.get("setor"))
 
     nao_elegivel = resultado.get("nao_elegivel", False)
 

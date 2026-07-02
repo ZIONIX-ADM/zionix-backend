@@ -733,7 +733,7 @@ async def analises():
             [r for r in rows if r["contexto"] in ("tendencia_forte", "pullback")],
             key=lambda r: float(r["score"]), reverse=True
         )[:3]
-        top_momentum = [{"ticker": r["ticker"], "score": float(r["score"]),
+        top_momentum = [{"ticker": r["ticker"].replace(".SA", ""), "score": float(r["score"]),
                          "contexto": r["contexto"], "sinal": r["sinal"]} for r in momentum_rows]
 
         # destaques: top estrutural (confiabilidade alta, excluindo os do momentum)
@@ -742,7 +742,7 @@ async def analises():
             [r for r in rows if r["confiabilidade"] == "alta" and r["ticker"] not in momentum_tickers],
             key=lambda r: float(r["score"]), reverse=True
         )[:3]
-        top_estrutural = [{"ticker": r["ticker"], "score": float(r["score"]),
+        top_estrutural = [{"ticker": r["ticker"].replace(".SA", ""), "score": float(r["score"]),
                            "contexto": r["contexto"], "sinal": r["sinal"]} for r in estrutural_rows]
 
         return {
