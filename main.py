@@ -678,7 +678,7 @@ async def analises():
     try:
         conn = await asyncpg.connect(_DB_URL, ssl="require")
         rows = await conn.fetch("""
-            SELECT s.ticker, a.setor, s.score, s.decisao, s.sinal,
+            SELECT s.ticker, a.nome, a.setor, s.score, s.decisao, s.sinal,
                    s.mercado, s.contexto, s.confiabilidade
             FROM scores_atual s
             LEFT JOIN ativos a ON a.ticker = s.ticker
@@ -745,6 +745,19 @@ async def analises():
         top_estrutural = [{"ticker": r["ticker"].replace(".SA", ""), "score": float(r["score"]),
                            "contexto": r["contexto"], "sinal": r["sinal"]} for r in estrutural_rows]
 
+        # ativos agrupados por decisão, ordenados por score desc
+        decisoes = ["comprar", "manter", "aguardar", "cautela", "evitar"]
+        ativos_por_decisao = {d: [] for d in decisoes}
+        for r in sorted(rows, key=lambda r: float(r["score"]), reverse=True):
+            d = r["decisao"]
+            if d in ativos_por_decisao:
+                ativos_por_decisao[d].append({
+                    "ticker": r["ticker"].replace(".SA", ""),
+                    "nome": r["nome"],
+                    "score": float(r["score"]),
+                    "sinal": r["sinal"],
+                })
+
         return {
             "mercado": mercado,
             "total_ativos": len(rows),
@@ -752,6 +765,7 @@ async def analises():
             "distribuicao": distribuicao,
             "por_setor": por_setor,
             "destaques": {"top_momentum": top_momentum, "top_estrutural": top_estrutural},
+            "ativos_por_decisao": ativos_por_decisao,
         }
     except Exception as e:
         return {"erro": str(e)}
