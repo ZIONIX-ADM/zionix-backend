@@ -159,6 +159,36 @@ def calcular_score_ativo(ticker_sa: str, mercado: str = "neutro"):
         return {"erro": str(e)}
 
 
+async def buscar_score_ontem(conn, ticker: str) -> float | None:
+    """Retorna o score salvo mais recente para o ticker, ou None se não existir."""
+    row = await conn.fetchrow("""
+        SELECT score FROM scores_historico
+        WHERE ticker = $1 AND nao_elegivel = false
+        ORDER BY data_referencia DESC
+        LIMIT 1
+    """, ticker)
+    return float(row["score"]) if row else None
+
+
+def suavizar_score(score_bruto: float, score_ontem: float | None) -> float:
+    """
+    Correção 1: suavização exponencial + cap de variação diária.
+    score = 65% do bruto de hoje + 35% do score de ontem.
+    Variação máxima: 20 pts por dia (pra mais ou pra menos).
+    Primeiro dia sem histórico: usa o bruto diretamente.
+    """
+    if score_ontem is None:
+        return score_bruto
+
+    suavizado = 0.65 * score_bruto + 0.35 * score_ontem
+
+    delta = suavizado - score_ontem
+    if abs(delta) > 20:
+        suavizado = score_ontem + (20.0 if delta > 0 else -20.0)
+
+    return round(suavizado, 2)
+
+
 async def persistir(conn, ticker: str, resultado: dict, mercado: str = "neutro"):
     """INSERT na tabela scores_historico, idempotente por (ticker, data_referencia)."""
     await conn.execute("""
@@ -251,6 +281,10 @@ async def main():
                 continue
 
             try:
+                score_ontem = await buscar_score_ontem(conn, ticker)
+                score_suavizado = suavizar_score(float(resultado["score"]), score_ontem)
+                resultado["score"] = score_suavizado
+                resultado["sinal"] = sinal_from_score(score_suavizado)
                 await persistir(conn, ticker, resultado, mercado)
             except Exception as e:
                 contadores["erro"] += 1
