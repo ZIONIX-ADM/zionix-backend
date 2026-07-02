@@ -2,7 +2,7 @@ import asyncio
 from datetime import date
 
 import asyncpg
-from fastapi import FastAPI
+from fastapi import FastAPI, Body
 from fastapi.middleware.cors import CORSMiddleware
 import yfinance as yf
 
@@ -769,6 +769,109 @@ async def analises():
         }
     except Exception as e:
         return {"erro": str(e)}
+
+
+@app.post("/api/analise-ia/{ticker}")
+async def analise_ia(ticker: str, body: dict = Body(...)):
+    """Gera leitura da IA explicando o score do ativo. Cache diário no Supabase."""
+    ticker = ticker.upper()
+    score = float(body.get("score", 0))
+    decisao = body.get("decisao", "aguardar")
+    sinal = body.get("sinal", "")
+    mercado = body.get("mercado", "neutro")
+    setor = body.get("setor", "") or "não informado"
+    nome = body.get("nome", ticker)
+
+    try:
+        conn = await asyncpg.connect(_DB_URL, ssl="require")
+
+        # Garante que a tabela existe (idempotente)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS leituras_ia (
+                id SERIAL PRIMARY KEY,
+                ticker VARCHAR NOT NULL,
+                texto TEXT NOT NULL,
+                score_no_momento NUMERIC,
+                data_geracao DATE NOT NULL DEFAULT CURRENT_DATE,
+                criado_em TIMESTAMPTZ DEFAULT now(),
+                UNIQUE(ticker, data_geracao)
+            )
+        """)
+
+        # Verifica cache do dia
+        row = await conn.fetchrow(
+            "SELECT texto FROM leituras_ia WHERE ticker = $1::varchar AND data_geracao = CURRENT_DATE",
+            ticker
+        )
+        if row:
+            await conn.close()
+            return {"texto": row["texto"], "cache": True}
+
+        # Monta contexto rico para o prompt
+        decisao_label = {
+            "comprar": "Compra — ativo com setup favorável",
+            "manter": "Manter — tendência positiva, sem sinal de entrada nova",
+            "aguardar": "Aguardar — sem setup claro no momento",
+            "cautela": "Cautela — sinais mistos ou estrutura fraca",
+            "evitar": "Evitar — estrutura técnica deteriorada",
+        }.get(decisao, decisao)
+
+        mercado_label = {
+            "bull": "mercado em alta (IBOV acima das médias)",
+            "bear": "mercado em queda (IBOV abaixo das médias)",
+            "neutro": "mercado sem tendência definida",
+        }.get(mercado, mercado)
+
+        prompt = f"""Você é um analista de investimentos explicando para um investidor iniciante brasileiro por que uma ação recebeu determinada nota de análise técnica.
+
+Dados do ativo:
+- Empresa: {nome} ({ticker})
+- Setor: {setor}
+- Score técnico: {round(score)}/100
+- Decisão do modelo: {decisao_label}
+- Sinal operacional: {sinal}
+- Contexto de mercado: {mercado_label}
+
+Escreva exatamente 2 frases em português claro, sem jargão técnico:
+1. Explique objetivamente por que o ativo recebeu esse score (o que está bem ou mal na análise técnica)
+2. O que isso significa na prática para quem acompanha esse ativo hoje
+
+Regras:
+- Não mencione o número do score diretamente
+- Não use palavras como "médias móveis", "RSI", "ATR", "drawdown", "volatilidade"
+- Use linguagem simples: "o preço está subindo com consistência", "o ativo perdeu força", "há pressão compradora", etc.
+- Seja específico para esse ativo — não escreva texto genérico
+- Não faça previsões ("pode subir", "tende a cair")
+- Máximo 60 palavras no total
+
+Resposta:"""
+
+        try:
+            resposta = get_openai_client().responses.create(
+                model="gpt-4o-mini",
+                input=prompt
+            )
+            texto = limpar_texto_ia(resposta.output_text)
+        except Exception as e:
+            print(f"[analise-ia] erro IA: {e}")
+            texto = f"{nome} apresenta {decisao_label.lower()} no cenário atual de {mercado_label}."
+
+        # Salva no cache (ignora conflito se outro request simultâneo já salvou)
+        try:
+            await conn.execute(
+                """INSERT INTO leituras_ia (ticker, texto, score_no_momento)
+                   VALUES ($1::varchar, $2, $3)
+                   ON CONFLICT (ticker, data_geracao) DO NOTHING""",
+                ticker, texto, score
+            )
+        except Exception as e:
+            print(f"[analise-ia] erro cache: {e}")
+
+        await conn.close()
+        return {"texto": texto, "cache": False}
+
+    except Exception as e:
+        return {"texto": f"Análise técnica indica {decisao} para {nome} no contexto atual.", "cache": False, "erro": str(e)}
 
 
 @app.get("/historico/{ticker}")
