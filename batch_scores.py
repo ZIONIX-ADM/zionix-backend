@@ -32,6 +32,19 @@ BATCH_SIZE = 10
 SLEEP_ENTRE_BATCHES = 2  # segundos
 
 
+def decisao_from_score(score: float, mercado: str) -> str:
+    """Recalcula decisao a partir do score suavizado, espelhando diagnostico.ts."""
+    t_manter   = 55 if mercado == "bull" else 40 if mercado == "bear" else 46
+    t_comprar  = t_manter + 16
+    t_aguardar = t_manter - 10
+    t_cautela  = t_aguardar - 12
+    if score >= t_comprar:   return "comprar"
+    if score >= t_manter:    return "manter"
+    if score >= t_aguardar:  return "aguardar"
+    if score >= t_cautela:   return "cautela"
+    return "evitar"
+
+
 def sinal_from_score(score: float) -> str:
     if score >= 70:
         return "Compra forte"
@@ -292,6 +305,7 @@ async def main():
                 score_ontem = await buscar_score_ontem(conn, ticker)
                 score_suavizado = suavizar_score(float(resultado["score"]), score_ontem)
                 resultado["score"] = score_suavizado
+                resultado["decisao"] = decisao_from_score(score_suavizado, mercado)
                 resultado["sinal"] = sinal_from_score(score_suavizado)
                 await persistir(conn, ticker, resultado, mercado)
             except Exception as e:

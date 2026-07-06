@@ -264,7 +264,8 @@ def analisar_ativo(
     posicao_range,
     sequencia,
     volatilidade,
-    setor
+    setor,
+    mercado: str = "neutro",
 ):
     # 🔥 FORÇA
     if sequencia >= 4:
@@ -349,14 +350,20 @@ def analisar_ativo(
     else:
         sinal = "Evitar"
 
-    # decisao compatível com os thresholds de gerarDiagnosticoDiario
-    if score >= 68:
+    # decisao com thresholds dinâmicos por regime (espelha diagnostico.ts)
+    # gaps fixos: comprar-manter=16, manter-aguardar=10, aguardar-cautela=12
+    t_manter  = 55 if mercado == "bull" else 40 if mercado == "bear" else 46
+    t_comprar = t_manter + 16
+    t_aguardar = t_manter - 10
+    t_cautela  = t_aguardar - 12
+
+    if score >= t_comprar:
         decisao = "comprar"
-    elif score >= 52:
+    elif score >= t_manter:
         decisao = "manter"
-    elif score >= 42:
+    elif score >= t_aguardar:
         decisao = "aguardar"
-    elif score >= 30:
+    elif score >= t_cautela:
         decisao = "cautela"
     else:
         decisao = "evitar"
@@ -566,7 +573,8 @@ async def buscar_ativo(ticker: str):
             posicao_range=posicao_range,
             sequencia=sequencia,
             volatilidade=volatilidade,
-            setor=setor
+            setor=setor,
+            mercado=mercado,
         )
 
         cenario = analise["cenario"]
