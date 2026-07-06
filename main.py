@@ -742,6 +742,56 @@ async def score_ticker(ticker: str):
         return {"erro": str(e)}
 
 
+def _fetch_indices_sync() -> dict:
+    """Busca todos os índices de forma síncrona (roda em thread separada)."""
+    def fetch_yf(symbol: str):
+        try:
+            t = yf.Ticker(symbol)
+            info = t.fast_info
+            valor = info.last_price
+            prev  = info.previous_close
+            if valor is None or prev is None:
+                return None
+            variacao_abs = round(valor - prev, 4)
+            variacao_pct = round((valor - prev) / prev * 100, 2)
+            return {"valor": round(valor, 4), "variacao_pct": variacao_pct, "variacao_abs": variacao_abs}
+        except Exception:
+            return None
+
+    def fetch_selic():
+        try:
+            import json as _json
+            import urllib.request as _ur
+            import ssl as _ssl
+            # série 432 = SELIC meta (% a.a.)
+            url = "https://api.bcb.gov.br/dados/serie/bcdata.sgs.432/dados/ultimos/1?formato=json"
+            req = _ur.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            try:
+                import certifi
+                ctx = _ssl.create_default_context(cafile=certifi.where())
+            except ImportError:
+                ctx = _ssl.create_default_context()
+            with _ur.urlopen(req, timeout=8, context=ctx) as r:
+                dados = _json.loads(r.read())
+            return {"valor": float(dados[0]["valor"].replace(",", ".")), "variacao_pct": None, "variacao_abs": None}
+        except Exception as e:
+            print(f"[SELIC] ERRO: {type(e).__name__}: {e}", flush=True)
+            return None
+
+    return {
+        "ibov":  fetch_yf("^BVSP"),
+        "dolar": fetch_yf("BRL=X"),
+        "sp500": fetch_yf("^GSPC"),
+        "btc":   fetch_yf("BTC-USD"),
+        "selic": fetch_selic(),
+    }
+
+
+@app.get("/mercado/indices")
+async def mercado_indices():
+    return await asyncio.get_event_loop().run_in_executor(None, _fetch_indices_sync)
+
+
 @app.get("/analises")
 async def analises():
     try:
