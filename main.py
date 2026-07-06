@@ -586,12 +586,6 @@ async def buscar_ativo(ticker: str):
         decisao = analise["decisao"]
         contexto_analise = analise["contexto"]
 
-        asyncio.create_task(salvar_score(
-            ticker, score, decisao, sinal, mercado, contexto_analise,
-            preco_atual, confiabilidade="reduzida" if avisos else "alta",
-            avisos=avisos
-        ))
-
         interpretacao = gerar_interpretacao_ia(
             nome,
             cenario,
@@ -716,6 +710,33 @@ async def ranking(limite: int = 10):
                 }
                 for r in rows
             ]
+        }
+    except Exception as e:
+        return {"erro": str(e)}
+
+
+@app.get("/score/{ticker}")
+async def score_ticker(ticker: str):
+    """Retorna score/decisao do banco (scores_atual) para um único ticker."""
+    try:
+        conn = await asyncpg.connect(_DB_URL, ssl="require")
+        row = await conn.fetchrow("""
+            SELECT s.ticker, a.nome, s.score, s.decisao, s.sinal, s.mercado, s.confiabilidade
+            FROM scores_atual s
+            LEFT JOIN ativos a ON a.ticker = s.ticker
+            WHERE s.ticker = $1 AND s.nao_elegivel = false
+        """, ticker.upper())
+        await conn.close()
+        if not row:
+            return {"erro": "ticker não encontrado no banco"}
+        return {
+            "ticker": row["ticker"],
+            "nome": row["nome"],
+            "score": float(row["score"]),
+            "decisao": row["decisao"],
+            "sinal": row["sinal"],
+            "mercado": row["mercado"],
+            "confiabilidade": row["confiabilidade"],
         }
     except Exception as e:
         return {"erro": str(e)}
