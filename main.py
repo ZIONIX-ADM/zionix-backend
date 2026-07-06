@@ -894,26 +894,29 @@ Regras:
 
 Resposta:"""
 
+        ia_ok = False
         try:
             resposta = get_openai_client().responses.create(
                 model="gpt-4o-mini",
                 input=prompt
             )
             texto = limpar_texto_ia(resposta.output_text)
+            ia_ok = True
         except Exception as e:
             print(f"[analise-ia] erro IA: {e}")
             texto = f"{nome} apresenta {decisao_label.lower()} no cenário atual de {mercado_label}."
 
-        # Salva no cache (ignora conflito se outro request simultâneo já salvou)
-        try:
-            await conn.execute(
-                """INSERT INTO leituras_ia (ticker, texto, score_no_momento)
-                   VALUES ($1::varchar, $2, $3)
-                   ON CONFLICT (ticker, data_geracao) DO NOTHING""",
-                ticker, texto, score
-            )
-        except Exception as e:
-            print(f"[analise-ia] erro cache: {e}")
+        # Só cacheia se a LLM respondeu — fallback nunca é salvo no banco
+        if ia_ok:
+            try:
+                await conn.execute(
+                    """INSERT INTO leituras_ia (ticker, texto, score_no_momento)
+                       VALUES ($1::varchar, $2, $3)
+                       ON CONFLICT (ticker, data_geracao) DO NOTHING""",
+                    ticker, texto, score
+                )
+            except Exception as e:
+                print(f"[analise-ia] erro cache: {e}")
 
         await conn.close()
         return {"texto": texto, "cache": False}
