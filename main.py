@@ -724,7 +724,10 @@ async def score_ticker(ticker: str):
             SELECT s.ticker, a.nome, s.score, s.decisao, s.sinal, s.mercado, s.confiabilidade
             FROM scores_atual s
             LEFT JOIN ativos a ON a.ticker = s.ticker
-            WHERE s.ticker = $1 AND s.nao_elegivel = false
+            WHERE (s.ticker = $1 OR s.ticker = $1 || '.SA')
+              AND s.nao_elegivel = false
+            ORDER BY s.score DESC
+            LIMIT 1
         """, ticker.upper())
         await conn.close()
         if not row:
