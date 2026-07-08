@@ -1,9 +1,6 @@
 [build]
 builder = "NIXPACKS"
 
-[deploy]
-startCommand = "uvicorn main:app --host 0.0.0.0 --port $PORT"
-
 [cron.batch-scores]
 schedule = "30 21 * * 1-5"
 command = "python3 batch_scores.py"
