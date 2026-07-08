@@ -25,7 +25,27 @@ from main import (
 
 load_dotenv()
 
-DB_URL = os.getenv("DATABASE_URL", "").replace("postgresql+asyncpg://", "postgresql://")
+
+def _normalizar_db_url(url: str) -> str:
+    """Percent-encode da senha para não quebrar o parse do asyncpg (@, [, ], # etc)."""
+    from urllib.parse import quote_plus
+
+    url = url.replace("postgresql+asyncpg://", "postgresql://")
+    scheme_sep = url.find("://")
+    if scheme_sep == -1:
+        return url
+    scheme, rest = url[:scheme_sep], url[scheme_sep + 3:]
+    at = rest.rfind("@")  # último @: a senha pode conter @
+    if at == -1:
+        return url
+    cred, host = rest[:at], rest[at + 1:]
+    if ":" not in cred:
+        return url
+    user, senha = cred.split(":", 1)
+    return f"{scheme}://{user}:{quote_plus(senha)}@{host}"
+
+
+DB_URL = _normalizar_db_url(os.getenv("DATABASE_URL", ""))
 NEXTJS_URL = os.getenv("NEXTJS_URL", "http://localhost:3000")
 TICKERS_FILE = "tickers_b3.json"
 BATCH_SIZE = 10
