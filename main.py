@@ -2,7 +2,7 @@ import asyncio
 from datetime import date
 
 import asyncpg
-from fastapi import FastAPI, Body
+from fastapi import FastAPI, Body, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import yfinance as yf
 
@@ -1047,6 +1047,105 @@ def historico(
             "erro": "Erro ao buscar histórico",
             "detalhe": str(e)
         }
+
+
+# ── Scheduler interno do batch (substitui o serviço cron do Railway) ──
+
+BATCH_HORA_UTC = 21
+BATCH_MINUTO_UTC = 30
+
+_batch_lock = asyncio.Lock()
+_batch_status = {
+    "rodando": False,
+    "ultimo_inicio": None,
+    "ultimo_fim": None,
+    "ultimo_exit_code": None,
+    "origem": None,
+}
+_ultimo_dia_batch = None  # date do último disparo agendado
+_scheduler_task = None
+
+
+async def _rodar_batch(origem: str) -> dict:
+    if _batch_lock.locked():
+        return {"iniciado": False, "motivo": "batch já em execução"}
+
+    async with _batch_lock:
+        from datetime import datetime, timezone
+        import sys
+
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "batch_scores.py")
+        _batch_status["rodando"] = True
+        _batch_status["ultimo_inicio"] = datetime.now(timezone.utc).isoformat()
+        _batch_status["origem"] = origem
+        exit_code = -1
+        try:
+            # stdout/stderr herdados: logs do batch aparecem no log do serviço
+            proc = await asyncio.create_subprocess_exec(sys.executable, script)
+            exit_code = await proc.wait()
+        except Exception as e:
+            print(f"[batch] erro ao executar subprocess: {e}")
+        finally:
+            _batch_status["rodando"] = False
+            _batch_status["ultimo_fim"] = datetime.now(timezone.utc).isoformat()
+            _batch_status["ultimo_exit_code"] = exit_code
+
+    return {"iniciado": True, "exit_code": _batch_status["ultimo_exit_code"]}
+
+
+async def _scheduler_batch():
+    global _ultimo_dia_batch
+    from datetime import datetime, timezone
+
+    while True:
+        agora = datetime.now(timezone.utc)
+        dia_util = agora.weekday() < 5  # 0=seg ... 4=sex
+        if (
+            dia_util
+            and agora.hour == BATCH_HORA_UTC
+            and agora.minute == BATCH_MINUTO_UTC
+            and _ultimo_dia_batch != agora.date()
+        ):
+            _ultimo_dia_batch = agora.date()
+            print(f"[batch] disparando batch agendado {agora.isoformat()}")
+            await _rodar_batch("scheduler")
+        # 55s garante ao menos uma checagem dentro de cada janela de 1 minuto
+        await asyncio.sleep(55)
+
+
+@app.on_event("startup")
+async def _iniciar_scheduler():
+    global _scheduler_task
+    _scheduler_task = asyncio.create_task(_scheduler_batch())
+
+
+@app.get("/batch/status")
+async def batch_status():
+    return {
+        **_batch_status,
+        "agendamento": f"{BATCH_HORA_UTC:02d}:{BATCH_MINUTO_UTC:02d} UTC seg-sex",
+    }
+
+
+_batch_manual_task = None
+
+
+@app.post("/rodar-batch")
+async def rodar_batch_manual(authorization: str = Header(default="")):
+    import secrets as _secrets
+
+    token = os.getenv("BATCH_SECRET_TOKEN", "")
+    esperado = f"Bearer {token}"
+    if not token or not _secrets.compare_digest(authorization, esperado):
+        raise HTTPException(status_code=401, detail="Token inválido")
+
+    if _batch_lock.locked():
+        raise HTTPException(status_code=409, detail="Batch já em execução")
+
+    global _batch_manual_task
+    _batch_manual_task = asyncio.create_task(_rodar_batch("manual"))
+    return {"iniciado": True, "acompanhe_em": "/batch/status"}
+
 
 if __name__ == "__main__":
     import uvicorn
