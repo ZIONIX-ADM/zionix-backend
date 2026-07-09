@@ -1,7 +1,0 @@
-[build]
-builder = "NIXPACKS"
-
-[deploy]
-startCommand = "python3 batch_scores.py"
-cronSchedule = "30 21 * * 1-5"
-restartPolicyType = "NEVER"
