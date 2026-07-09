@@ -361,4 +361,5 @@ async def main():
     print(f"  Total:                       {sum(contadores.values())}")
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
